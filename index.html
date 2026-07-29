@@ -3,155 +3,98 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ระบบสแกนส่งงาน</title>
-    <!-- โหลดไลบรารีสแกน QR Code -->
+    <title>Scanner Diagnostic Mode</title>
     <script src="https://unpkg.com/html5-qrcode"></script>
     <style>
-        body {
-            margin: 0; padding: 20px; font-family: sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: #333; min-height: 100vh; display: flex; justify-content: center; align-items: center;
-        }
-        .glass-card {
-            background: rgba(255, 255, 255, 0.9);
-            backdrop-filter: blur(12px);
-            border-radius: 24px;
-            padding: 24px;
-            width: 100%; max-width: 400px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
-            text-align: center;
-        }
-        #reader { width: 100%; border-radius: 12px; overflow: hidden; margin-bottom: 16px; border: 2px solid #ddd; background: #000; }
-        .status { padding: 12px; border-radius: 8px; font-weight: bold; margin-top: 10px; background: #f0f0f0; transition: 0.3s; }
-        .success { background: #d4edda; color: #155724; }
-        .error { background: #f8d7da; color: #721c24; }
+        body { margin: 0; padding: 20px; font-family: sans-serif; background: #2c3e50; color: white; text-align: center; }
+        .card { background: white; color: #333; border-radius: 20px; padding: 20px; max-width: 400px; margin: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
+        #reader { width: 100%; border-radius: 10px; background: #000; margin-bottom: 15px; }
+        .status-box { padding: 15px; border-radius: 10px; font-weight: bold; font-size: 14px; margin-top: 10px; min-height: 50px; border: 1px solid #ddd; }
+        .err-detail { font-family: monospace; font-size: 11px; color: #721c24; margin-top: 5px; display: block; }
     </style>
 </head>
 <body>
 
-<div class="glass-card">
-    <h2>ระบบบันทึกการส่งงาน</h2>
+<div class="card">
+    <h3>ระบบสแกน (โหมดตรวจสอบ)</h3>
     <div id="reader"></div>
-    <div id="status" class="status">กำลังเปิดกล้องหลัง...</div>
+    <div id="status" class="status-box">กำลังเตรียมระบบ...</div>
 </div>
 
 <script>
-    // ==========================================
-    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwlisdnrMKP3HckaQrUPnTqWpLtEqn3qDU4YFTkQKUzkJ6NoB0uV4e9sJ37GnJW33_BRw/exec"; 
-    // ==========================================
+    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxPF_O0OuY7FsWdEI6uW9DG33gjimwqiuw2YpiSzsgj6sM98_hgJZwUuxERQWTbsei2dg/exec";
 
     let isScanning = false;
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     const audioCtx = new AudioContext();
 
-    // --- ฟังก์ชันสร้างเสียง 3 รูปแบบ ---
-    
-    // 1. เสียงสแกนติด (Beep สั้นๆ แหลมๆ)
-    function playScanBeep() {
-        playTone(880, 0.1, 'sine');
-    }
-
-    // 2. เสียงสำเร็จ (เสียงสูง 2 จังหวะ ติ๊ด-ติ้ว)
-    function playSuccessSound() {
-        playTone(880, 0.1, 'sine');
-        setTimeout(() => playTone(1320, 0.15, 'sine'), 100);
-    }
-
-    // 3. เสียงแจ้งเตือน/ส่งซ้ำ (เสียงต่ำ ลากยาว ตื๊ด...)
-    function playErrorSound() {
-        playTone(220, 0.4, 'sawtooth'); // sawtooth จะให้เสียงที่ดูดุขึ้น
-    }
-
     function playTone(freq, duration, type) {
-        const oscillator = audioCtx.createOscillator();
-        const gainNode = audioCtx.createGain();
-        oscillator.connect(gainNode);
-        gainNode.connect(audioCtx.destination);
-        oscillator.type = type;
-        oscillator.frequency.value = freq;
-        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
-        oscillator.start();
-        oscillator.stop(audioCtx.currentTime + duration);
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.type = type; osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+        osc.start(); osc.stop(audioCtx.currentTime + duration);
     }
 
-    function onScanSuccess(decodedText, decodedResult) {
-        if (isScanning) return; 
-        if (audioCtx.state === 'suspended') audioCtx.resume(); // ปลุกระบบเสียง
+    function onScanSuccess(decodedText) {
+        if (isScanning) return;
+        if (audioCtx.state === 'suspended') audioCtx.resume();
 
         const parts = decodedText.split('_');
-        
         if(parts.length === 4) {
             isScanning = true;
-            playScanBeep(); // 🔈 เสียงสแกนติดครั้งแรก
-
-            const subject = parts[0];
-            const classRoom = parts[1];
-            const studentId = parts[2];
-            const workId = parts[3];
-            const timestamp = new Date().toLocaleString('th-TH');
+            playTone(880, 0.1, 'sine');
 
             const statusDiv = document.getElementById('status');
-            statusDiv.innerText = `⏳ กำลังบันทึก: ชั้น ${classRoom} เลขที่ ${studentId}...`;
-            statusDiv.className = 'status';
+            statusDiv.innerHTML = "⏳ กำลังส่งข้อมูล...";
+            statusDiv.style.background = "#fff3cd";
 
             const formData = new URLSearchParams();
-            formData.append('subject', subject);
-            formData.append('classRoom', classRoom);
-            formData.append('studentId', studentId);
-            formData.append('workId', workId);
-            formData.append('timestamp', timestamp);
+            formData.append('subject', parts[0]);
+            formData.append('classRoom', parts[1]);
+            formData.append('studentId', parts[2]);
+            formData.append('workId', parts[3]);
+            formData.append('timestamp', new Date().toLocaleString('th-TH'));
 
-            fetch(WEB_APP_URL, {
-                method: 'POST',
-                body: formData,
-            }).then(response => response.text())
-              .then(data => {
-                  if (data === "Success") {
-                      playSuccessSound(); // 🔈 เสียงเชิงบวก (สำเร็จ)
-                      statusDiv.innerText = `✅ ชั้น ${classRoom} เลขที่ ${studentId} ส่งงานสำเร็จ!`;
-                      statusDiv.className = 'status success';
-                  } else if (data === "Duplicate Submission") {
-                      playErrorSound(); // 🔈 เสียงเชิงลบ (ส่งซ้ำ)
-                      statusDiv.innerText = `⚠️ งานชิ้นนี้ส่งไปแล้วครับ!`;
-                      statusDiv.className = 'status error';
-                  } else {
-                      playErrorSound();
-                      statusDiv.innerText = `❌ ระบบตอบกลับ: ${data}`;
-                  }
-                  
-                  setTimeout(() => {
-                      statusDiv.innerText = 'รอการสแกน...';
-                      statusDiv.className = 'status';
-                      isScanning = false;
-                  }, 3000);
-              }).catch(error => {
-                  playErrorSound(); // 🔈 เสียงเชิงลบ (Error)
-                  statusDiv.innerText = `❌ เกิดข้อผิดพลาดในการเชื่อมต่อ`;
-                  statusDiv.className = 'status error';
-                  isScanning = false;
-              });
-        } else {
-            playErrorSound();
-            document.getElementById('status').innerText = '❌ รูปแบบ QR Code ไม่ถูกต้อง';
-            document.getElementById('status').className = 'status error';
+            // เพิ่ม Timeout 10 วินาที
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+            fetch(WEB_APP_URL, { method: 'POST', body: formData, signal: controller.signal })
+            .then(res => {
+                clearTimeout(timeoutId);
+                if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
+                return res.text();
+            })
+            .then(data => {
+                if (data === "Success") {
+                    playTone(1320, 0.2, 'sine');
+                    statusDiv.innerHTML = "✅ บันทึกสำเร็จ!";
+                    statusDiv.style.background = "#d4edda";
+                } else {
+                    playTone(220, 0.4, 'sawtooth');
+                    statusDiv.innerHTML = `⚠️ ปัญหา: ${data}`;
+                    statusDiv.style.background = "#f8d7da";
+                }
+                setTimeout(() => { isScanning = false; statusDiv.innerHTML = "รอการสแกน..."; statusDiv.style.background = "#f0f0f0"; }, 3000);
+            })
+            .catch(err => {
+                clearTimeout(timeoutId);
+                playTone(220, 0.5, 'sawtooth');
+                let errMsg = (err.name === 'AbortError') ? "เน็ตช้าเกินไป (Timeout)" : "เชื่อมต่อไม่ได้";
+                statusDiv.innerHTML = `❌ ${errMsg} <span class="err-detail">${err.message}</span>`;
+                statusDiv.style.background = "#f8d7da";
+                setTimeout(() => { isScanning = false; }, 4000);
+            });
         }
     }
 
-    // เริ่มกล้อง
-    const html5QrCode = new Html5Qrcode("reader");
-    html5QrCode.start(
-        { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 250, height: 250 } },
-        onScanSuccess,
-        () => {}
-    ).then(() => {
-        document.getElementById('status').innerText = 'รอการสแกน...';
-    }).catch((err) => {
-        document.getElementById('status').innerText = '❌ ไม่สามารถเข้าถึงกล้องได้';
-        document.getElementById('status').className = 'status error';
+    const scanner = new Html5Qrcode("reader");
+    scanner.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 }, onScanSuccess).then(() => {
+        document.getElementById('status').innerText = "พร้อมสแกน";
     });
 </script>
-
 </body>
 </html>

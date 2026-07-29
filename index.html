@@ -37,45 +37,53 @@
 
 <script>
     // ==========================================
-    // อย่าลืมนำ URL ของ Web App จาก Google มาวางที่นี่
-    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxUKc860WpGq5EjDDX02xV3-euJnpwNY8VZgBsdzNz7MSjQRTOK7eRdM7-D0IIzJ15LWg/exec"; 
+    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxBZv6ofpt9SQ-ASCRFWQUUBPmHtnegS6fwqVRCZM_LF_8UNZq0xWnm5TIhNIAnU_no3Q/exec"; 
     // ==========================================
 
     let isScanning = false;
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioContext();
 
-    // ฟังก์ชันสร้างเสียง Beep 
-    function playBeep() {
-        try {
-            const AudioContext = window.AudioContext || window.webkitAudioContext;
-            const audioCtx = new AudioContext();
-            const oscillator = audioCtx.createOscillator();
-            const gainNode = audioCtx.createGain();
-            
-            oscillator.connect(gainNode);
-            gainNode.connect(audioCtx.destination);
-            
-            oscillator.type = 'sine'; // เสียงแบบคลื่นไซน์ (ใสๆ)
-            oscillator.frequency.value = 880; // ความถี่เสียง
-            gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime); // ความดัง
-            
-            oscillator.start(audioCtx.currentTime);
-            oscillator.stop(audioCtx.currentTime + 0.15); // เล่นเสียง 0.15 วินาที
-        } catch (e) {
-            console.error("เบราว์เซอร์ไม่รองรับระบบเสียง");
-        }
+    // --- ฟังก์ชันสร้างเสียง 3 รูปแบบ ---
+    
+    // 1. เสียงสแกนติด (Beep สั้นๆ แหลมๆ)
+    function playScanBeep() {
+        playTone(880, 0.1, 'sine');
+    }
+
+    // 2. เสียงสำเร็จ (เสียงสูง 2 จังหวะ ติ๊ด-ติ้ว)
+    function playSuccessSound() {
+        playTone(880, 0.1, 'sine');
+        setTimeout(() => playTone(1320, 0.15, 'sine'), 100);
+    }
+
+    // 3. เสียงแจ้งเตือน/ส่งซ้ำ (เสียงต่ำ ลากยาว ตื๊ด...)
+    function playErrorSound() {
+        playTone(220, 0.4, 'sawtooth'); // sawtooth จะให้เสียงที่ดูดุขึ้น
+    }
+
+    function playTone(freq, duration, type) {
+        const oscillator = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        oscillator.type = type;
+        oscillator.frequency.value = freq;
+        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+        oscillator.start();
+        oscillator.stop(audioCtx.currentTime + duration);
     }
 
     function onScanSuccess(decodedText, decodedResult) {
         if (isScanning) return; 
-        
-        // แยกข้อมูลด้วย _ (คาดหวังรูปแบบ: วิชา_ชั้นเรียน_เลขที่_งานที่)
+        if (audioCtx.state === 'suspended') audioCtx.resume(); // ปลุกระบบเสียง
+
         const parts = decodedText.split('_');
         
         if(parts.length === 4) {
             isScanning = true;
-            
-            // เล่นเสียง Beep เมื่อสแกนข้อมูลถูกต้อง
-            playBeep();
+            playScanBeep(); // 🔈 เสียงสแกนติดครั้งแรก
 
             const subject = parts[0];
             const classRoom = parts[1];
@@ -99,8 +107,18 @@
                 body: formData,
             }).then(response => response.text())
               .then(data => {
-                  statusDiv.innerText = `✅ ชั้น ${classRoom} เลขที่ ${studentId} ส่งงานสำเร็จ!`;
-                  statusDiv.className = 'status success';
+                  if (data === "Success") {
+                      playSuccessSound(); // 🔈 เสียงเชิงบวก (สำเร็จ)
+                      statusDiv.innerText = `✅ ชั้น ${classRoom} เลขที่ ${studentId} ส่งงานสำเร็จ!`;
+                      statusDiv.className = 'status success';
+                  } else if (data === "Duplicate Submission") {
+                      playErrorSound(); // 🔈 เสียงเชิงลบ (ส่งซ้ำ)
+                      statusDiv.innerText = `⚠️ งานชิ้นนี้ส่งไปแล้วครับ!`;
+                      statusDiv.className = 'status error';
+                  } else {
+                      playErrorSound();
+                      statusDiv.innerText = `❌ ระบบตอบกลับ: ${data}`;
+                  }
                   
                   setTimeout(() => {
                       statusDiv.innerText = 'รอการสแกน...';
@@ -108,34 +126,29 @@
                       isScanning = false;
                   }, 3000);
               }).catch(error => {
-                  statusDiv.innerText = `❌ เกิดข้อผิดพลาดในการบันทึก`;
+                  playErrorSound(); // 🔈 เสียงเชิงลบ (Error)
+                  statusDiv.innerText = `❌ เกิดข้อผิดพลาดในการเชื่อมต่อ`;
                   statusDiv.className = 'status error';
                   isScanning = false;
               });
         } else {
-            // เล่นเสียงต่ำเพื่อเตือนว่าสแกนผิด (ทางเลือกเสริม)
+            playErrorSound();
             document.getElementById('status').innerText = '❌ รูปแบบ QR Code ไม่ถูกต้อง';
             document.getElementById('status').className = 'status error';
         }
     }
 
-    // ใช้คลาส Html5Qrcode แบบตรงๆ เพื่อข้าม UI และบังคับเปิดกล้องหลัง
+    // เริ่มกล้อง
     const html5QrCode = new Html5Qrcode("reader");
-    
     html5QrCode.start(
-        { facingMode: "environment" }, // บังคับใช้กล้องหลัง
-        {
-            fps: 10,
-            qrbox: { width: 250, height: 250 }
-        },
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
         onScanSuccess,
-        (errorMessage) => {
-            // ไม่ต้องแสดงข้อความ Error ระหว่างที่กล้องกำลังหา QR Code
-        }
+        () => {}
     ).then(() => {
         document.getElementById('status').innerText = 'รอการสแกน...';
     }).catch((err) => {
-        document.getElementById('status').innerText = '❌ ไม่สามารถเข้าถึงกล้องได้ กรุณาตรวจสอบการอนุญาต';
+        document.getElementById('status').innerText = '❌ ไม่สามารถเข้าถึงกล้องได้';
         document.getElementById('status').className = 'status error';
     });
 </script>

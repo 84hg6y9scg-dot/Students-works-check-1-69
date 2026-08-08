@@ -10,7 +10,13 @@
         .card { background: white; color: #333; border-radius: 20px; padding: 20px; max-width: 400px; margin: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
         #reader { width: 100%; border-radius: 10px; background: #000; margin-bottom: 15px; }
         .status-box { padding: 15px; border-radius: 10px; font-weight: bold; font-size: 14px; margin-top: 10px; min-height: 50px; border: 1px solid #ddd; }
-        .err-detail { font-family: monospace; font-size: 11px; color: #721c24; margin-top: 5px; display: block; }
+        
+        /* สไตล์ที่เพิ่มใหม่สำหรับจัดการคิวส่งข้อมูล */
+        .scanned-list { margin-top: 15px; max-height: 200px; overflow-y: auto; text-align: left; font-size: 14px; }
+        .list-item { background: #f8f9fa; padding: 10px; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; border-radius: 5px; margin-bottom: 5px; }
+        .delete-btn { color: #dc3545; font-weight: bold; cursor: pointer; padding: 5px 10px; background: #ffebed; border-radius: 5px; }
+        .btn-send { background: #28a745; color: white; border: none; padding: 12px; width: 100%; font-size: 16px; font-weight: bold; border-radius: 10px; margin-top: 15px; cursor: pointer; }
+        .btn-send:disabled { background: #6c757d; cursor: not-allowed; }
     </style>
 </head>
 <body>
@@ -18,17 +24,24 @@
 <div class="card">
     <h3>ระบบสแกน (โหมดตรวจสอบ)</h3>
     <div id="reader"></div>
-    <div id="status" class="status-box">กำลังเตรียมระบบ...</div>
+    <div id="status" class="status-box">พร้อมสแกนเก็บเข้าคิว...</div>
+    
+    <div id="scannedList" class="scanned-list"></div>
+    <button id="sendBtn" class="btn-send" onclick="sendBatchData()" disabled>ส่งข้อมูล (0 รายการ)</button>
 </div>
 
 <script>
-    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwvlPWexcClqhDd37nRzvRCOo_Iv_12LUwA8ENdFCpmfXi8FSXc2eyfOQi5RsFPrsqC/exec";
+    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxcsNfeF2lihwLGFLXds2USazIpXgCir-ShTw0lIXlWGK80LM1w3sqrLOchOT4xGQtb1g/exec";
 
-    let isScanning = false;
+    let isProcessing = false;
+    let scannedQueue = []; // คิวเก็บข้อมูลการสแกน
+    let scanner;
+    
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     const audioCtx = new AudioContext();
 
     function playTone(freq, duration, type) {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
         osc.connect(gain); gain.connect(audioCtx.destination);
@@ -39,61 +52,113 @@
     }
 
     function onScanSuccess(decodedText) {
-        if (isScanning) return;
-        if (audioCtx.state === 'suspended') audioCtx.resume();
+        if (isProcessing) return;
 
         const parts = decodedText.split('_');
-        if(parts.length === 4) {
-            isScanning = true;
-            playTone(880, 0.1, 'sine');
-
-            const statusDiv = document.getElementById('status');
-            statusDiv.innerHTML = "⏳ กำลังส่งข้อมูล...";
-            statusDiv.style.background = "#fff3cd";
-
-            const formData = new URLSearchParams();
-            formData.append('subject', parts[0]);
-            formData.append('classRoom', parts[1]);
-            formData.append('studentId', parts[2]);
-            formData.append('workId', parts[3]);
-            formData.append('timestamp', new Date().toLocaleString('th-TH'));
-
-            // เพิ่ม Timeout 10 วินาที
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-            fetch(WEB_APP_URL, { method: 'POST', body: formData, signal: controller.signal })
-            .then(res => {
-                clearTimeout(timeoutId);
-                if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
-                return res.text();
-            })
-            .then(data => {
-                if (data === "Success") {
-                    playTone(1320, 0.2, 'sine');
-                    statusDiv.innerHTML = "✅ บันทึกสำเร็จ!";
-                    statusDiv.style.background = "#d4edda";
-                } else {
-                    playTone(220, 0.4, 'sawtooth');
-                    statusDiv.innerHTML = `⚠️ ปัญหา: ${data}`;
-                    statusDiv.style.background = "#f8d7da";
-                }
-                setTimeout(() => { isScanning = false; statusDiv.innerHTML = "รอการสแกน..."; statusDiv.style.background = "#f0f0f0"; }, 3000);
-            })
-            .catch(err => {
-                clearTimeout(timeoutId);
-                playTone(220, 0.5, 'sawtooth');
-                let errMsg = (err.name === 'AbortError') ? "เน็ตช้าเกินไป (Timeout)" : "เชื่อมต่อไม่ได้";
-                statusDiv.innerHTML = `❌ ${errMsg} <span class="err-detail">${err.message}</span>`;
-                statusDiv.style.background = "#f8d7da";
-                setTimeout(() => { isScanning = false; }, 4000);
-            });
+        if (parts.length === 4) {
+            // เช็คว่าเคยสแกนรหัสนี้ลงคิวไปหรือยังในรอบนี้
+            const isDuplicate = scannedQueue.some(item => item.raw === decodedText);
+            
+            if (!isDuplicate) {
+                playTone(880, 0.1, 'sine'); // เสียงปี๊บ สแกนติด
+                scannedQueue.push({
+                    raw: decodedText,
+                    subject: parts[0],
+                    classRoom: parts[1],
+                    studentId: parts[2],
+                    workId: parts[3]
+                });
+                
+                updateUI();
+                
+                // ดีเลย์เล็กน้อยป้องกันการสแกนรัวๆ เกินไป
+                isProcessing = true;
+                setTimeout(() => { isProcessing = false; }, 1000); 
+            }
         }
     }
 
-    const scanner = new Html5Qrcode("reader");
+    function updateUI() {
+        const listDiv = document.getElementById('scannedList');
+        const sendBtn = document.getElementById('sendBtn');
+        
+        listDiv.innerHTML = scannedQueue.map((item, index) => 
+            `<div class="list-item">
+                <span>ม.${item.classRoom} | เลขที่ ${item.studentId} | งาน ${item.workId}</span>
+                <span class="delete-btn" onclick="removeItem(${index})">ลบ</span>
+            </div>`
+        ).join('');
+
+        sendBtn.innerText = `ส่งข้อมูล (${scannedQueue.length} รายการ)`;
+        sendBtn.disabled = scannedQueue.length === 0;
+    }
+
+    function removeItem(index) {
+        scannedQueue.splice(index, 1);
+        updateUI();
+    }
+
+    function sendBatchData() {
+        if (scannedQueue.length === 0 || isProcessing) return;
+        
+        isProcessing = true;
+        scanner.pause(); // หยุดกล้องชั่วคราวขณะส่ง
+        
+        const statusDiv = document.getElementById('status');
+        statusDiv.innerHTML = "⏳ กำลังส่งข้อมูลทั้งหมด...";
+        statusDiv.style.background = "#fff3cd";
+        document.getElementById('sendBtn').disabled = true;
+
+        // ประทับเวลา "เดียวกัน" สำหรับงานทุกชิ้นในรอบนี้
+        const commonTimestamp = new Date().toLocaleString('th-TH');
+        
+        const payload = scannedQueue.map(item => ({
+            subject: item.subject,
+            classRoom: item.classRoom,
+            studentId: item.studentId,
+            workId: item.workId,
+            timestamp: commonTimestamp
+        }));
+
+        fetch(WEB_APP_URL, { 
+            method: 'POST', 
+            body: JSON.stringify(payload), 
+            // ส่งเป็น text เพื่อหลีกเลี่ยงปัญหา CORS Preflight ใน GAS
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+        })
+        .then(res => res.text())
+        .then(data => {
+            if (data.includes("Success")) {
+                playTone(1320, 0.3, 'sine');
+                statusDiv.innerHTML = "✅ บันทึกสำเร็จทั้งหมด!";
+                statusDiv.style.background = "#d4edda";
+                scannedQueue = []; // ล้างคิวเมื่อส่งเสร็จ
+                updateUI();
+            } else {
+                playTone(220, 0.5, 'sawtooth');
+                statusDiv.innerHTML = `⚠️ ปัญหา: ${data}`;
+                statusDiv.style.background = "#f8d7da";
+            }
+        })
+        .catch(err => {
+            playTone(220, 0.5, 'sawtooth');
+            statusDiv.innerHTML = `❌ เชื่อมต่อไม่ได้: ${err.message}`;
+            statusDiv.style.background = "#f8d7da";
+        })
+        .finally(() => {
+            setTimeout(() => { 
+                isProcessing = false; 
+                statusDiv.innerHTML = "พร้อมสแกนเก็บเข้าคิว..."; 
+                statusDiv.style.background = "#f0f0f0"; 
+                document.getElementById('sendBtn').disabled = scannedQueue.length === 0;
+                scanner.resume(); // เปิดกล้องต่อ
+            }, 3000);
+        });
+    }
+
+    scanner = new Html5Qrcode("reader");
     scanner.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 }, onScanSuccess).then(() => {
-        document.getElementById('status').innerText = "พร้อมสแกน";
+        document.getElementById('status').innerText = "พร้อมสแกนเก็บเข้าคิว...";
     });
 </script>
 </body>
